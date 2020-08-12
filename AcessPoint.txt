@@ -1,0 +1,127 @@
+Comandos para configurar o Raspberry como Acess Point WiFi
+
+https://www.filipeflop.com/blog/configure-raspberry-pi-como-access-point/
+
+-------------
+1. Primeiramente, atualize os pacotes existentes na sua Raspberry Pi Zero W e instale os pacotes dsnmasq, dhcpcd e hostapd. Faça isso com os comandos abaixo:
+
+sudo apt -y update
+sudo apt -y upgrade
+sudo apt -y install dnsmasq dhcpcd hostapd
+
+2. Agora, deve-se descobrir o endereço físico (MAC address) do wi-fi da placa. para isso execute o comando abaixo e salve/guarde a resposta para uso futuro,
+
+cat /sys/class/net/wlan0/address
+
+3. Em posse do MAC address, o próximo passo é criar o arquivo /etc/udev/rules.d/70-persistent-net.rules. Crie este arquivo (e abra-o no editor nano) com o comando abaixo:
+
+sudo nano /etc/udev/rules.d/70-persistent-net.rules
+
+No arquivo, coloque o seguinte conteúdo:
+
+SUBSYSTEM=="ieee80211", ACTION=="add|change", ATTR{macaddress}=="MAC_ADDRESS", KERNEL=="phy0", \
+  RUN+="/sbin/iw phy phy0 interface add ap0 type __ap", \
+  RUN+="/bin/ip link set ap0 address MAC_ADDRESS"
+
+Onde MAC_ADDRESS corresponde ao MAC Address obtido neste passo.
+
+4. Agora, abra o arquivo /etc/dnsmasq.conf com o editor nano (como sudo: sudo nano) e faça com que o conteúdo abaixo seja o conteúdo deste arquivo. Basicamente, estas configurações configuram o DHCP para a interface AP, incluindo o range de IPs possíveis de serem atribuídos aos que se irão se conectar na interface AP.
+
+interface=lo,ap0
+no-dhcp-interface=lo,wlan0
+bind-interfaces
+server=8.8.8.8
+domain-needed
+bogus-priv
+dhcp-range=192.168.10.50,192.168.10.150,12h
+
+
+5.  Agora é o momento de fazer as configuração da interface AP (incluindo o SSID/nome da rede e senha da mesma). Para isso, abra o arquivo /etc/hostapd/hostapd.conf com o editor nano(como sudo: sudo nano) e faça com que seu conteúdo seja conforme consta abaixo:
+
+ctrl_interface=/var/run/hostapd
+ctrl_interface_group=0
+interface=ap0
+driver=nl80211
+ssid=AP_SSID
+hw_mode=g
+channel=11
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+wpa=2PASSPHRASE
+wpa_passphrase= AP_PASSPHRASE
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP CCMP
+rsn_pairwise=CCMP
+
+Onde:
+
+AP_SSID: nome desejado para o Access Point
+
+AP_PASSPHRASE: senha para se conectar ao Access Point criado pela Raspberry Pi Zero W
+
+
+6. Uma vez escritas as configurações da interface Access Point, o hostapd deve ter conhecimento das mesmas. Para isso, abra o arquivo /etc/default/hostapd no editor nano(como sudo: sudo nano) e faça com que seu conteúdo seja conforme mostrado abaixo:
+
+DAEMON_CONF="/etc/hostapd/hostapd.conf"
+
+
+7. Agora é o momento de configurar a parte Station (ou seja a qual SSID/rede a Raspberry Pi Zero W deve se conectar). Para isso, abra o arquivo /etc/wpa_supplicant/wpa_supplicant.conf no editor nano(como sudo: sudo nano) e faça com que seu conteúdo seja conforme mostrado abaixo:
+
+country=US
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+network={
+    ssid="CLIENT_SSID"
+    psk="CLIENT_PASSPHRASE"
+    id_str="AP1"
+}
+
+
+Onde:
+
+CLIENT_SSID: nome da rede a qual a Raspberry Pi Zero W deve se conectar (esta rede irá prover conectividade Internet à Raspberry PI Zero W).
+CLIENT_PASSPHRASE: senha da rede a qual a Raspberry Pi Zero W deve se conectar
+
+
+8. Mais algumas configurações de ambas as interfaces wi-fi precisam ser feitas. Para isso, abra o arquivo /etc/network/interfaces no editor nano (como sudo: sudo nano) e faça com que seu conteúdo seja conforme mostrado abaixo:
+
+source-directory /etc/network/interfaces.d
+auto lo
+auto ap0
+auto wlan0
+iface lo inet loopback
+allow-hotplug ap0
+iface ap0 inet static
+    address 192.168.10.1
+    netmask 255.255.255.0
+    hostapd /etc/hostapd/hostapd.conf
+allow-hotplug wlan0
+iface wlan0 inet manual
+    wpa-roam /etc/wpa_supplicant/wpa_supplicant.conf
+iface AP1 inet dhcp
+
+9. Todas as configurações necessárias foram feitas. Agora, é o momento de criar um script que, ao ser carregado a cada boot, vai ativar as interfaces conforme se deseja e , além disso, faz com a que interface AP possa prover acesso à Internet para os dispositivos que nela se conectem (redirecionamento de conectividade). Para isso, crie o arquivo /bin/start_wifi.sh com o editor nano (como sudo: sudo nano) e coloque o conteúdo abaixo no arquivo.
+Note que a primeira linha é um sleep de 50 segundos. Ele faz com que as interfaces sejam configuradas conforme desejamos após 50 segundos do início do boot da placa, tempo mais do que suficiente para o sistema operacional ser carregado e operar plenamente.
+
+sleep 50
+sudo ifdown --force wlan0
+sudo ifdown --force ap0
+sudo ifup ap0
+sudo ifup wlan0
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo iptables -t nat -A POSTROUTING -s 192.168.10.0/24 ! -d 192.168.10.0/24 -j MASQUERADE
+sudo systemctl restart dnsmasq
+
+
+10. Como o script do passo 9 deverá ser executado a cada boot, este deve ter permissão de execução. Conceda permissão de execução a ele com o comando abaixo:
+
+sudo chmod +x /bin/start_wifi.sh
+
+
+11. Agora, para garantir que o script do passo 9 seja executado a cada boot / reboot da placa, faremos uso do Cron. Para isso, utilize o comando abaixo para agendar a execução do script pelo cron a cada boot/reboot:
+
+crontab -l | { cat; echo "@reboot /bin/start_wifi.sh"; } | crontab -
+
+
+12. Pronto! Agora basta reiniciar a placa, aguardar aproximadamente 50 segundos e verificar com seu computador ou smartphone que uma rede wi-fi (AP) foi criada pela sua Raspberry PI Zero W!
